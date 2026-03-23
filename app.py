@@ -12,16 +12,14 @@ CORS(app, supports_credentials=True)
 
 DB_PATH = os.environ.get('DB_PATH', 'crm.db')
 
-# ── ПОЛЬЗОВАТЕЛИ ──────────────────────────────────────────
 USERS = {
-    'maxim':   '4f89468b6cda0d9bf7c0cd3411807ebc264829e0daa4d764d80c39d83d002d07',  # Kx9#mP2w
-    'partner': '9623b6ca8356e8351063ae140e00a6a5be93680a87028a890334ec3b2a9f22cf'   # Vn4$jR8q
+    'maxim':   '4f89468b6cda0d9bf7c0cd3411807ebc264829e0daa4d764d80c39d83d002d07',
+    'partner': '9623b6ca8356e8351063ae140e00a6a5be93680a87028a890334ec3b2a9f22cf'
 }
 
 def sha256(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
-# ── БАЗА ДАННЫХ ───────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -41,9 +39,9 @@ def init_db():
                 call_status TEXT DEFAULT 'notcalled',
                 amount TEXT,
                 init_note TEXT,
+                pipeline_stage TEXT DEFAULT 'lead',
                 created_at TEXT
             );
-
             CREATE TABLE IF NOT EXISTS notes (
                 id TEXT PRIMARY KEY,
                 client_id TEXT NOT NULL,
@@ -51,7 +49,15 @@ def init_db():
                 created_at TEXT,
                 FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
             );
-
+            CREATE TABLE IF NOT EXISTS activities (
+                id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                text TEXT NOT NULL,
+                author TEXT,
+                created_at TEXT,
+                FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -61,7 +67,6 @@ def init_db():
                 client_id TEXT,
                 created_at TEXT
             );
-
             CREATE TABLE IF NOT EXISTS orders (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -73,10 +78,15 @@ def init_db():
                 created_at TEXT
             );
         ''')
+        for col in [
+            'ALTER TABLE clients ADD COLUMN pipeline_stage TEXT DEFAULT "lead"',
+            'ALTER TABLE activities ADD COLUMN author TEXT',
+        ]:
+            try: conn.execute(col)
+            except: pass
 
 init_db()
 
-# ── ХЕЛПЕРЫ ───────────────────────────────────────────────
 def require_auth(f):
     from functools import wraps
     @wraps(f)
@@ -87,7 +97,7 @@ def require_auth(f):
     return decorated
 
 def new_id():
-    return str(uuid.uuid4())[:12].replace('-', '')
+    return str(uuid.uuid4())[:12].replace('-','')
 
 def now():
     return datetime.now().strftime('%d.%m.%Y %H:%M')
@@ -95,7 +105,7 @@ def now():
 def now_date():
     return datetime.now().strftime('%d.%m.%Y')
 
-# ── AUTH ──────────────────────────────────────────────────
+# AUTH
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
@@ -117,7 +127,7 @@ def me():
         return jsonify({'ok': True, 'username': session['user']})
     return jsonify({'ok': False}), 401
 
-# ── CLIENTS ───────────────────────────────────────────────
+# CLIENTS
 @app.route('/api/clients', methods=['GET'])
 @require_auth
 def get_clients():
@@ -126,10 +136,8 @@ def get_clients():
         clients = []
         for row in rows:
             c = dict(row)
-            notes = conn.execute(
-                'SELECT * FROM notes WHERE client_id=? ORDER BY rowid ASC', (c['id'],)
-            ).fetchall()
-            c['notes'] = [dict(n) for n in notes]
+            c['notes'] = [dict(n) for n in conn.execute('SELECT * FROM notes WHERE client_id=? ORDER BY rowid ASC', (c['id'],)).fetchall()]
+            c['activities'] = [dict(a) for a in conn.execute('SELECT * FROM activities WHERE client_id=? ORDER BY rowid ASC', (c['id'],)).fetchall()]
             clients.append(c)
     return jsonify(clients)
 
@@ -140,15 +148,14 @@ def add_client():
     cid = new_id()
     note_text = (d.get('init_note') or '').strip()
     with get_db() as conn:
-        conn.execute('''
-            INSERT INTO clients (id, name, company, phone, email, source, status, call_status, amount, init_note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (cid, d['name'], d.get('company',''), d.get('phone',''), d.get('email',''),
-              d.get('source','Прямой'), d.get('status','new'), d.get('call_status','notcalled'),
-              d.get('amount',''), note_text, now_date()))
+        conn.execute('INSERT INTO clients (id,name,company,phone,email,source,status,call_status,amount,init_note,pipeline_stage,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            (cid, d['name'], d.get('company',''), d.get('phone',''), d.get('email',''),
+             d.get('source','Прямой'), d.get('status','new'), d.get('call_status','notcalled'),
+             d.get('amount',''), note_text, d.get('pipeline_stage','lead'), now_date()))
         if note_text:
-            conn.execute('INSERT INTO notes (id, client_id, text, created_at) VALUES (?,?,?,?)',
-                         (new_id(), cid, note_text, now()))
+            conn.execute('INSERT INTO notes (id,client_id,text,created_at) VALUES (?,?,?,?)', (new_id(), cid, note_text, now()))
+        conn.execute('INSERT INTO activities (id,client_id,type,text,author,created_at) VALUES (?,?,?,?,?,?)',
+            (new_id(), cid, 'created', 'Клиент добавлен', session.get('user','?'), now()))
     return jsonify({'ok': True, 'id': cid})
 
 @app.route('/api/clients/<cid>', methods=['PUT'])
@@ -156,12 +163,11 @@ def add_client():
 def update_client(cid):
     d = request.json
     with get_db() as conn:
-        conn.execute('''
-            UPDATE clients SET name=?, company=?, phone=?, email=?, source=?,
-            status=?, call_status=?, amount=?, init_note=? WHERE id=?
-        ''', (d['name'], d.get('company',''), d.get('phone',''), d.get('email',''),
-              d.get('source','Прямой'), d.get('status','new'), d.get('call_status','notcalled'),
-              d.get('amount',''), d.get('init_note',''), cid))
+        old = conn.execute('SELECT * FROM clients WHERE id=?', (cid,)).fetchone()
+        conn.execute('UPDATE clients SET name=?,company=?,phone=?,email=?,source=?,status=?,call_status=?,amount=?,init_note=?,pipeline_stage=? WHERE id=?',
+            (d['name'], d.get('company',''), d.get('phone',''), d.get('email',''),
+             d.get('source','Прямой'), d.get('status','new'), d.get('call_status','notcalled'),
+             d.get('amount',''), d.get('init_note',''), d.get('pipeline_stage', old['pipeline_stage'] if old else 'lead'), cid))
     return jsonify({'ok': True})
 
 @app.route('/api/clients/<cid>', methods=['DELETE'])
@@ -169,6 +175,7 @@ def update_client(cid):
 def delete_client(cid):
     with get_db() as conn:
         conn.execute('DELETE FROM notes WHERE client_id=?', (cid,))
+        conn.execute('DELETE FROM activities WHERE client_id=?', (cid,))
         conn.execute('DELETE FROM clients WHERE id=?', (cid,))
     return jsonify({'ok': True})
 
@@ -178,23 +185,34 @@ def patch_client_field(cid):
     d = request.json
     field = d.get('field')
     value = d.get('value')
-    allowed = {'status', 'call_status'}
-    if field not in allowed:
+    if field not in {'status','call_status','pipeline_stage'}:
         return jsonify({'error': 'Invalid field'}), 400
     with get_db() as conn:
+        old = dict(conn.execute(f'SELECT {field} FROM clients WHERE id=?', (cid,)).fetchone() or {})
         conn.execute(f'UPDATE clients SET {field}=? WHERE id=?', (value, cid))
+        if field == 'pipeline_stage':
+            labels = {'lead':'Новый лид','contact':'Контакт','proposal':'Предложение','negotiation':'Переговоры','won':'Сделка закрыта','lost':'Отказ'}
+            text = f'Этап: {labels.get(old.get(field,""), old.get(field,""))} → {labels.get(value, value)}'
+            conn.execute('INSERT INTO activities (id,client_id,type,text,author,created_at) VALUES (?,?,?,?,?,?)',
+                (new_id(), cid, 'stage', text, session.get('user','?'), now()))
+        elif field == 'call_status':
+            text = '✅ Звонок совершён' if value == 'called' else '❌ Звонок не совершён'
+            conn.execute('INSERT INTO activities (id,client_id,type,text,author,created_at) VALUES (?,?,?,?,?,?)',
+                (new_id(), cid, 'call', text, session.get('user','?'), now()))
     return jsonify({'ok': True})
 
-# ── NOTES ─────────────────────────────────────────────────
+# NOTES
 @app.route('/api/clients/<cid>/notes', methods=['POST'])
 @require_auth
 def add_note(cid):
     d = request.json
     nid = new_id()
+    ts = now()
     with get_db() as conn:
-        conn.execute('INSERT INTO notes (id, client_id, text, created_at) VALUES (?,?,?,?)',
-                     (nid, cid, d['text'], now()))
-    return jsonify({'ok': True, 'id': nid, 'created_at': now()})
+        conn.execute('INSERT INTO notes (id,client_id,text,created_at) VALUES (?,?,?,?)', (nid, cid, d['text'], ts))
+        conn.execute('INSERT INTO activities (id,client_id,type,text,author,created_at) VALUES (?,?,?,?,?,?)',
+            (new_id(), cid, 'note', d['text'], session.get('user','?'), ts))
+    return jsonify({'ok': True, 'id': nid, 'created_at': ts})
 
 @app.route('/api/notes/<nid>', methods=['DELETE'])
 @require_auth
@@ -203,7 +221,19 @@ def delete_note(nid):
         conn.execute('DELETE FROM notes WHERE id=?', (nid,))
     return jsonify({'ok': True})
 
-# ── TASKS ─────────────────────────────────────────────────
+# ACTIVITIES
+@app.route('/api/clients/<cid>/activities', methods=['POST'])
+@require_auth
+def add_activity(cid):
+    d = request.json
+    aid = new_id()
+    ts = now()
+    with get_db() as conn:
+        conn.execute('INSERT INTO activities (id,client_id,type,text,author,created_at) VALUES (?,?,?,?,?,?)',
+            (aid, cid, d.get('type','note'), d['text'], session.get('user','?'), ts))
+    return jsonify({'ok': True, 'id': aid, 'created_at': ts, 'author': session.get('user','?')})
+
+# TASKS
 @app.route('/api/tasks', methods=['GET'])
 @require_auth
 def get_tasks():
@@ -217,11 +247,8 @@ def add_task():
     d = request.json
     tid = new_id()
     with get_db() as conn:
-        conn.execute('''
-            INSERT INTO tasks (id, title, description, due_date, status, client_id, created_at)
-            VALUES (?,?,?,?,?,?,?)
-        ''', (tid, d['title'], d.get('description',''), d.get('due_date',''),
-              d.get('status','new'), d.get('client_id',''), now_date()))
+        conn.execute('INSERT INTO tasks (id,title,description,due_date,status,client_id,created_at) VALUES (?,?,?,?,?,?,?)',
+            (tid, d['title'], d.get('description',''), d.get('due_date',''), d.get('status','new'), d.get('client_id',''), now_date()))
     return jsonify({'ok': True, 'id': tid})
 
 @app.route('/api/tasks/<tid>', methods=['PUT'])
@@ -229,13 +256,11 @@ def add_task():
 def update_task(tid):
     d = request.json
     with get_db() as conn:
-        conn.execute('''
-            UPDATE tasks SET title=?, description=?, due_date=?, status=?, client_id=? WHERE id=?
-        ''', (d['title'], d.get('description',''), d.get('due_date',''),
-              d.get('status','new'), d.get('client_id',''), tid))
+        conn.execute('UPDATE tasks SET title=?,description=?,due_date=?,status=?,client_id=? WHERE id=?',
+            (d['title'], d.get('description',''), d.get('due_date',''), d.get('status','new'), d.get('client_id',''), tid))
     return jsonify({'ok': True})
 
-# ── ORDERS ────────────────────────────────────────────────
+# ORDERS
 @app.route('/api/orders', methods=['GET'])
 @require_auth
 def get_orders():
@@ -249,11 +274,8 @@ def add_order():
     d = request.json
     oid = new_id()
     with get_db() as conn:
-        conn.execute('''
-            INSERT INTO orders (id, title, client_id, amount, status, due_date, note, created_at)
-            VALUES (?,?,?,?,?,?,?,?)
-        ''', (oid, d['title'], d.get('client_id',''), d.get('amount',''),
-              d.get('status','new'), d.get('due_date',''), d.get('note',''), now_date()))
+        conn.execute('INSERT INTO orders (id,title,client_id,amount,status,due_date,note,created_at) VALUES (?,?,?,?,?,?,?,?)',
+            (oid, d['title'], d.get('client_id',''), d.get('amount',''), d.get('status','new'), d.get('due_date',''), d.get('note',''), now_date()))
     return jsonify({'ok': True, 'id': oid})
 
 @app.route('/api/orders/<oid>', methods=['PUT'])
@@ -261,10 +283,8 @@ def add_order():
 def update_order(oid):
     d = request.json
     with get_db() as conn:
-        conn.execute('''
-            UPDATE orders SET title=?, client_id=?, amount=?, status=?, due_date=?, note=? WHERE id=?
-        ''', (d['title'], d.get('client_id',''), d.get('amount',''),
-              d.get('status','new'), d.get('due_date',''), d.get('note',''), oid))
+        conn.execute('UPDATE orders SET title=?,client_id=?,amount=?,status=?,due_date=?,note=? WHERE id=?',
+            (d['title'], d.get('client_id',''), d.get('amount',''), d.get('status','new'), d.get('due_date',''), d.get('note',''), oid))
     return jsonify({'ok': True})
 
 @app.route('/api/orders/<oid>', methods=['DELETE'])
@@ -274,7 +294,6 @@ def delete_order(oid):
         conn.execute('DELETE FROM orders WHERE id=?', (oid,))
     return jsonify({'ok': True})
 
-# ── STATIC ────────────────────────────────────────────────
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
