@@ -1,68 +1,64 @@
-# МОЯ CRM
+# CRM Full
 
-Лёгкая CRM система с общей базой данных.
+A lightweight CRM system for managing clients, deals, tasks and orders. Built as a single-page app with a Python backend and no frontend framework dependencies.
 
-## Логины
-| Кто     | Логин     | Пароль     |
-|---------|-----------|------------|
-| Ты      | `maxim`   | `Kx9#mP2w` |
-| Друг    | `partner` | `Vn4$jR8q` |
+## Problem it solves
 
----
+Small sales teams often need a simple CRM without the complexity of enterprise tools. This app provides a clean pipeline view, client notes, activity history and task tracking - all in one place.
 
-## Запуск локально (PyCharm)
+## Tech Stack
 
-1. Установи зависимости:
+| Layer | Technology |
+|---|---|
+| Backend | Python, Flask |
+| Database | SQLite |
+| Auth | Session-based (Flask sessions) |
+| Frontend | Vanilla HTML/CSS/JavaScript |
+| Deploy | Gunicorn, Procfile-ready |
+
+## Architecture
+
 ```
+Browser (index.html)
+      |
+      | REST API (JSON)
+      v
+Flask App (app.py)
+      |
+      v
+SQLite (crm.db)
+   - clients
+   - notes
+   - activities
+   - tasks
+   - orders
+```
+
+## Key Features
+
+- Client pipeline with stages: Lead - Contact - Proposal - Negotiation - Won/Lost
+- Activity feed per client (auto-logs stage changes, calls, notes)
+- Tasks and orders management
+- Multi-user session auth
+- Responsive dark UI, no frontend framework
+
+## How to Run Locally
+
+```bash
+git clone https://github.com/MaximLopatin123/crm-full.git
+cd crm-full
 pip install -r requirements.txt
-```
-
-2. Запусти:
-```
 python app.py
 ```
 
-3. Открой: http://localhost:8080
+Open `http://localhost:8080`
 
----
+Set a custom secret key via environment variable:
 
-## Деплой на Railway (бесплатно, 5 минут)
-
-1. Зарегистрируйся на https://railway.app (через GitHub)
-2. Нажми **New Project → Deploy from GitHub repo**
-3. Загрузи папку в GitHub (или используй Railway CLI):
-   ```
-   npm install -g @railway/cli
-   railway login
-   railway init
-   railway up
-   ```
-4. Railway сам найдёт `Procfile` и задеплоит
-5. Получишь ссылку вида `https://твой-проект.up.railway.app`
-
-### Важно для Railway:
-Добавь переменную окружения в настройках:
-- `SECRET_KEY` = любая случайная строка (например `myCRM2024secretXYZ`)
-
----
-
-## Деплой на Render (бесплатно)
-
-1. Зарегистрируйся на https://render.com
-2. New → Web Service → загрузи код
-3. Build command: `pip install -r requirements.txt`
-4. Start command: `gunicorn app:app`
-5. Добавь env variable: `SECRET_KEY=myCRM2024secretXYZ`
-
----
-
-## Структура файлов
+```bash
+SECRET_KEY=your-secret-key python app.py
 ```
-crm/
-├── app.py            ← Flask бэкенд + SQLite
-├── requirements.txt  ← зависимости
-├── Procfile          ← для Railway/Render
-├── README.md
-└── static/
-    └── index.html    ← фронтенд
-```
+
+## Screenshots
+
+_Screenshots coming soon_
